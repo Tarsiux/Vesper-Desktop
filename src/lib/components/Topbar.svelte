@@ -3,9 +3,9 @@
 
 <nav>
   <ol>
-    <li><a href="">Descargar</a></li>
+    <li><a href="/home">Descargar</a></li>
     <li><a href="">Editar</a></li>
-    <li><a href="">Ajustes</a></li>
+    <li><a href="/settings">Ajustes</a></li>
   </ol>
 </nav>
 
