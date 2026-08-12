@@ -13,3 +13,4 @@ vite.config.ts.timestamp-*
 AGENTS.md
 src-tauri/binaries/*
 !src-tauri/binaries/.gitkeep
+.freebuff/*
