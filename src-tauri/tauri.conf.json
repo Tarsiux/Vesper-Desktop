@@ -24,6 +24,10 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "resources": {
+      "binaries/ffmpeg.exe": "binaries/ffmpeg.exe",
+      "binaries/yt-dlp.exe": "binaries/yt-dlp.exe"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
