@@ -11,3 +11,5 @@ vite.config.ts.timestamp-*
 .vscode
 /.vscode
 AGENTS.md
+src-tauri/binaries/*
+!src-tauri/binaries/.gitkeep
