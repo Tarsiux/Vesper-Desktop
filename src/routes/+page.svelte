@@ -1,63 +1,104 @@
 <script lang="ts">
   import { goto } from "$app/navigation";
   import { onMount } from "svelte";
+  import ProgressRing from "$lib/components/ProgressRing.svelte";
+
+  const TICK_MS = 35; // avance por paso
+  const HOLD_AT = 50; // porcentaje donde se hace la pausa
+  const HOLD_MS = 900; // duración de la pausa en 50%
+  const FINAL_MS = 350; // breve espera al llegar a 100%
+
+  let progress = $state(0);
+  let paused = $state(false);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let holdTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function step() {
+    progress = Math.min(100, progress + 1);
+
+    if (progress >= 100) {
+      timer = setTimeout(() => goto("/home"), FINAL_MS);
+      return;
+    }
+
+    if (progress === HOLD_AT && !paused) {
+      paused = true;
+      holdTimer = setTimeout(() => {
+        paused = false;
+        timer = setTimeout(step, TICK_MS);
+      }, HOLD_MS);
+      return;
+    }
+
+    timer = setTimeout(step, TICK_MS);
+  }
 
   onMount(() => {
-    const timer = setTimeout(() => goto("/home"), 2000);
-    return () => clearTimeout(timer);
+    timer = setTimeout(step, TICK_MS);
+    return () => {
+      if (timer) clearTimeout(timer);
+      if (holdTimer) clearTimeout(holdTimer);
+    };
   });
 </script>
 
 <div class="loader">
-  <div class="bar">
-    <div class="fill"></div>
+  <div class="logo-backdrop" aria-hidden="true">
+    <img src="/logo.svg" alt="" />
   </div>
-  <p>Cargando...</p>
+
+  <ProgressRing progress={progress} processing={paused} />
 </div>
 
 <style>
   .loader {
+    position: relative;
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 1rem;
-    width: 100%;
-    height: 100vh;
-    padding: 0 2rem;
+    gap: var(--space-5);
+    min-height: 100vh;
+    padding: var(--container-padding);
     box-sizing: border-box;
+    animation: loader-in 400ms ease;
   }
 
-  .bar {
-    width: min(80vw, 320px);
-    height: 6px;
-    border-radius: 3px;
+  /* Logo gigante de fondo, fijo a la pantalla, como marca de agua */
+  .logo-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     overflow: hidden;
-    background: rgba(128, 128, 128, 0.3);
+    pointer-events: none;
   }
 
-  .fill {
-    width: 100%;
-    height: 100%;
-    border-radius: 3px;
-    background: #646cff;
-    animation: load 2s ease-in-out forwards;
-    transform-origin: left;
+  .logo-backdrop img {
+    /* Cuadrado: nunca ocupa el 100% de ancho ni alto, siempre se ve entero y centrado */
+    width: min(88vw, 88vh);
+    height: min(88vw, 88vh);
+    object-fit: contain;
+    opacity: 0.08;
+    filter: saturate(0.55) brightness(1.05);
+    user-select: none;
+    -webkit-user-drag: none;
   }
 
-  p {
-    margin: 0;
-    font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
-    font-size: 1rem;
-    color: #888;
+  /* El contenido del loader queda por encima del fondo */
+  .loader > :not(.logo-backdrop) {
+    position: relative;
+    z-index: 1;
   }
 
-  @keyframes load {
+  @keyframes loader-in {
     from {
-      transform: scaleX(0);
+      opacity: 0;
     }
     to {
-      transform: scaleX(1);
+      opacity: 1;
     }
   }
 </style>
