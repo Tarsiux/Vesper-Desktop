@@ -1,6 +1,7 @@
 <script lang="ts">
   import Topbar from "$lib/components/Topbar.svelte";
   import Options from "$lib/components/Options.svelte";
+  import LoadingOverlay from "$lib/components/LoadingOverlay.svelte";
   import type { DownloadOptions, Format, VideoInfo } from "$lib/types";
   import { invoke } from "@tauri-apps/api/core";
 
@@ -10,6 +11,7 @@
   let videoFormats: Format[] = [];
   let audioFormats: Format[] = [];
   let optionsOpen = false;
+  let loading = false;
   let error = "";
 
   async function select_folder() {
@@ -25,6 +27,7 @@
 
   async function descargar() {
     error = "";
+    loading = true;
     try {
       info = await invoke<VideoInfo>("show_options_video", { url });
       videoFormats = info.formats.filter(
@@ -41,6 +44,8 @@
     } catch (e) {
       error = String(e);
       console.error("Error al obtener opciones:", e);
+    } finally {
+      loading = false;
     }
   }
 
@@ -119,6 +124,8 @@
     title={info?.title ?? ""}
     onDescargar={handleDescargar}
   />
+
+  <LoadingOverlay open={loading} />
 </div>
 
 <style>
