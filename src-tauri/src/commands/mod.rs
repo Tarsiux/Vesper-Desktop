@@ -6,5 +6,6 @@ pub fn register() -> Box<tauri::ipc::InvokeHandler<tauri::Wry>> {
         folder::select_folder,
         download::show_options_video,
         download::descargar,
+        download::cancelar_descarga,
     ])
 }
