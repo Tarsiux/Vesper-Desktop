@@ -94,3 +94,13 @@ export interface DownloadProgress {
   message?: string | null;
   error?: string | null;
 }
+
+export type EditStatus = "procesando" | "completado" | "error";
+
+export interface EditProgress {
+  id: string;
+  status: EditStatus;
+  progress: number;
+  message?: string | null;
+  error?: string | null;
+}
