@@ -1,0 +1,359 @@
+use std::collections::HashMap;
+use std::io::{BufRead, BufReader};
+use std::path::PathBuf;
+use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+use tauri::Emitter;
+
+use super::download::{binary_path, hidden_cmd, kill_tree, video_codec};
+use crate::structs::{EditProgress, EditStatus};
+
+/// Nombre del evento emitido al frontend con el progreso del recorte.
+const EVENT: &str = "editor://progress";
+
+/// Contador para que los ids de recorte sean únicos.
+static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Identifica un recorte activo para poder cancelarlo: un flag de cancelación
+/// y el pid del proceso ffmpeg que se está ejecutando ahora mismo.
+#[derive(Clone)]
+struct CancelHandle {
+    flag: Arc<AtomicBool>,
+    pid: Arc<Mutex<Option<u32>>>,
+}
+
+/// Recortes en curso, por id.
+static ACTIVE: OnceLock<Mutex<HashMap<String, CancelHandle>>> = OnceLock::new();
+
+fn active() -> &'static Mutex<HashMap<String, CancelHandle>> {
+    ACTIVE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn new_id() -> String {
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    format!("{millis}-{}", COUNTER.fetch_add(1, Ordering::Relaxed))
+}
+
+fn emit(
+    app: &tauri::AppHandle,
+    id: &str,
+    status: EditStatus,
+    progress: f64,
+    message: Option<&str>,
+    error: Option<&str>,
+) {
+    let _ = app.emit(
+        EVENT,
+        EditProgress {
+            id: id.to_string(),
+            status,
+            progress,
+            message: message.map(|s| s.to_string()),
+            error: error.map(|s| s.to_string()),
+        },
+    );
+}
+
+/// Abre el diálogo nativo para elegir un archivo de video o audio según el modo.
+#[tauri::command]
+pub fn select_media_file(tipo: String) -> Result<Option<String>, String> {
+    let (title, filters): (&str, Vec<(&str, Vec<&str>)>) = match tipo.as_str() {
+        "audio" => (
+            "Seleccionar audio",
+            vec![("Audio", vec!["mp3", "m4a", "wav", "flac", "ogg"])],
+        ),
+        _ => (
+            "Seleccionar video",
+            vec![("Video", vec!["mp4", "mkv", "webm", "mov", "avi"])],
+        ),
+    };
+
+    let mut dialog = rfd::FileDialog::new().set_title(title);
+    for (name, exts) in filters {
+        dialog = dialog.add_filter(name, &exts);
+    }
+
+    Ok(dialog
+        .pick_file()
+        .map(|p| p.display().to_string().replace('\\', "/")))
+}
+
+/// Extrae `count` fotogramas repartidos por la duración con ffmpeg y los
+/// devuelve como data-URLs JPEG para la tira de la línea de tiempo del video.
+/// Un spawn de ffmpeg por fotograma, salida por stdout (pipe) para no ensuciar
+/// el disco; si un fotograma falla (p. ej. archivo con DRM) se salta.
+#[tauri::command]
+pub fn generar_thumbnails(
+    app: tauri::AppHandle,
+    path: String,
+    count: u32,
+    duration: f64,
+) -> Result<Vec<String>, String> {
+    let ffmpeg = binary_path(&app, "ffmpeg")?;
+    let count = count.clamp(1, 40);
+    let duration = if duration.is_finite() && duration > 0.0 {
+        duration
+    } else {
+        0.0
+    };
+
+    let mut thumbs = Vec::with_capacity(count as usize);
+    for i in 0..count {
+        // Timestamp del fotograma i, distribuido por la duración (centro de su
+        // franja para no pillar los bordes).
+        let t = if duration > 0.0 {
+            (i as f64 + 0.5) * duration / count as f64
+        } else {
+            0.0
+        };
+
+        let output = hidden_cmd(&ffmpeg)
+            .args([
+                "-ss",
+                &format!("{t:.3}"),
+                "-i",
+                &path,
+                "-frames:v",
+                "1",
+                "-f",
+                "mjpeg",
+                "-vcodec",
+                "mjpeg",
+                "-",
+            ])
+            .output()
+            .map_err(|e| e.to_string())?;
+
+        if output.status.success() && !output.stdout.is_empty() {
+            use base64::Engine;
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&output.stdout);
+            thumbs.push(format!("data:image/jpeg;base64,{b64}"));
+        }
+    }
+    Ok(thumbs)
+}
+
+/// Lee la duración del archivo desde la salida de `ffmpeg -i` (línea
+/// `Duration: HH:MM:SS.xx` en stderr). Se usa para mapear el progreso real del
+/// recorte; si no se puede leer, el recorte igualmente funciona.
+fn probe_duration(ffmpeg: &std::path::Path, path: &str) -> Option<f64> {
+    let output = hidden_cmd(ffmpeg).arg("-i").arg(path).output().ok()?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let line = stderr.lines().find(|l| l.trim_start().starts_with("Duration:"))?;
+    let rest = line.split("Duration:").nth(1)?.trim();
+    let time = rest.split(',').next()?.trim();
+    let mut parts = time.split(':');
+    let h: f64 = parts.next()?.parse().ok()?;
+    let m: f64 = parts.next()?.parse().ok()?;
+    let s: f64 = parts.next()?.parse().ok()?;
+    Some(h * 3600.0 + m * 60.0 + s)
+}
+
+/// Lanza el recorte en un hilo separado y devuelve al instante un `id` que el
+/// frontend usa para seguir el progreso vía eventos `editor://progress`
+/// (mismo patrón que las descargas).
+///
+/// - Audio: corte sin pérdida con `-c copy` (instantáneo).
+/// - Video: re-codificado para un corte exacto al fotograma (`-c:v` según el
+///   contenedor, `-c:a copy` para no tocar el audio).
+///
+/// El resultado se escribe en un temporal del mismo directorio y luego
+/// sobrescribe el archivo original.
+#[tauri::command]
+pub fn recortar_media(
+    app: tauri::AppHandle,
+    path: String,
+    start: f64,
+    end: f64,
+    es_video: bool,
+) -> Result<String, String> {
+    let src = PathBuf::from(&path);
+    if !src.is_file() {
+        return Err("El archivo no existe".into());
+    }
+    if !start.is_finite() || !end.is_finite() || end <= start {
+        return Err("Rango de recorte inválido".into());
+    }
+
+    let id = new_id();
+    let thread_id = id.clone();
+
+    let handle = CancelHandle {
+        flag: Arc::new(AtomicBool::new(false)),
+        pid: Arc::new(Mutex::new(None)),
+    };
+    active().lock().unwrap().insert(id.clone(), handle.clone());
+
+    std::thread::spawn(move || {
+        let result = run_trim(&app, &thread_id, path, start, end, es_video, &handle);
+        active().lock().unwrap().remove(&thread_id);
+        if let Err(e) = result {
+            emit(&app, &thread_id, EditStatus::Error, 0.0, None, Some(&e));
+        }
+    });
+
+    Ok(id)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_trim(
+    app: &tauri::AppHandle,
+    id: &str,
+    path: String,
+    start: f64,
+    end: f64,
+    es_video: bool,
+    cancel: &CancelHandle,
+) -> Result<(), String> {
+    if cancel.flag.load(Ordering::SeqCst) {
+        return Err("Recorte cancelado".into());
+    }
+
+    let ffmpeg = binary_path(app, "ffmpeg")?;
+    let src = PathBuf::from(&path);
+
+    // El temporal vive en el mismo directorio (mismo volumen) para que el
+    // renombrado final sobre el original sea inmediato.
+    let ext = src
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("mp4")
+        .to_ascii_lowercase();
+    let tmp = src.with_extension(format!("vesper-trim-{id}.{ext}"));
+    let len = end - start;
+
+    emit(app, id, EditStatus::Procesando, 0.0, Some("Recortando…"), None);
+
+    // Estimamos la duración para mapear out_time_us -> % (si falla, el recorte
+    // funciona igualmente y el panel queda en modo "procesando").
+    let duration = probe_duration(&ffmpeg, &path);
+
+    let mut args: Vec<String> = vec![
+        "-y".into(),
+        "-nostats".into(),
+        "-progress".into(),
+        "pipe:1".into(),
+        "-ss".into(),
+        format!("{start:.3}"),
+        "-i".into(),
+        path,
+        "-t".into(),
+        format!("{len:.3}"),
+    ];
+    if es_video {
+        args.extend([
+            "-c:v".into(),
+            video_codec(&ext).into(),
+            "-c:a".into(),
+            "copy".into(),
+        ]);
+    } else {
+        args.extend(["-c".into(), "copy".into()]);
+    }
+    args.push(tmp.to_string_lossy().to_string());
+
+    let mut child = hidden_cmd(&ffmpeg)
+        .args(&args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+
+    *cancel.pid.lock().unwrap() = Some(child.id());
+
+    // Si la cancelación llegó justo durante el spawn, la matamos aquí mismo.
+    if cancel.flag.load(Ordering::SeqCst) {
+        kill_tree(child.id());
+        let _ = child.wait();
+        *cancel.pid.lock().unwrap() = None;
+        let _ = std::fs::remove_file(&tmp);
+        return Err("Recorte cancelado".into());
+    }
+
+    // stderr (errores) se lee en un hilo aparte para no bloquear, igual que en
+    // las descargas: si no se drena, el buffer se llena y ffmpeg se cuelga.
+    let stderr = child.stderr.take().expect("stderr piped");
+    let err_handle = std::thread::spawn(move || {
+        let mut buf = String::new();
+        for line in BufReader::new(stderr).lines() {
+            if let Ok(l) = line {
+                buf.push_str(&l);
+                buf.push('\n');
+            }
+        }
+        buf
+    });
+
+    // stdout (`-progress pipe:1`) se lee aquí, en vivo.
+    let stdout = child.stdout.take().expect("stdout piped");
+    let mut out_time_us: f64 = 0.0;
+    for line in BufReader::new(stdout).lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => break,
+        };
+        if let Some(v) = line.strip_prefix("out_time_us=") {
+            if let Ok(v) = v.trim().parse::<f64>() {
+                out_time_us = v;
+            }
+        }
+        if let Some(d) = duration {
+            let frac = (out_time_us / (d * 1_000_000.0)).clamp(0.0, 1.0);
+            emit(
+                app,
+                id,
+                EditStatus::Procesando,
+                frac * 100.0,
+                Some("Recortando…"),
+                None,
+            );
+        }
+    }
+
+    let status = child.wait().map_err(|e| e.to_string())?;
+    *cancel.pid.lock().unwrap() = None;
+    let err_buf = err_handle.join().unwrap_or_default();
+
+    if cancel.flag.load(Ordering::SeqCst) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err("Recorte cancelado".into());
+    }
+
+    if !status.success() {
+        let _ = std::fs::remove_file(&tmp);
+        let msg = if err_buf.trim().is_empty() {
+            "ffmpeg falló al recortar".to_string()
+        } else {
+            err_buf.trim().to_string()
+        };
+        return Err(msg);
+    }
+
+    if !tmp.is_file() {
+        return Err("ffmpeg no generó el archivo recortado".into());
+    }
+
+    // Sobrescribe el archivo original con el recorte.
+    let _ = std::fs::remove_file(&src);
+    std::fs::rename(&tmp, &src)
+        .map_err(|e| format!("No se pudo sobrescribir el archivo original: {e}"))?;
+
+    emit(app, id, EditStatus::Completado, 100.0, Some("Completado"), None);
+    Ok(())
+}
+
+/// Cancela un recorte en curso: mata ffmpeg y el hilo se encarga de borrar el
+/// temporal.
+#[tauri::command]
+pub fn cancelar_recorte(id: String) {
+    if let Some(handle) = active().lock().unwrap().remove(&id) {
+        handle.flag.store(true, Ordering::SeqCst);
+        if let Some(pid) = handle.pid.lock().unwrap().take() {
+            kill_tree(pid);
+        }
+    }
+}
