@@ -58,6 +58,30 @@ pub struct DownloadProgress {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct UpdateProgress {
+    pub progress: f64,
+    pub message: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EditStatus {
+    Procesando,
+    Completado,
+    Error,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct EditProgress {
+    pub id: String,
+    pub status: EditStatus,
+    pub progress: f64,
+    pub message: Option<String>,
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct VideoInfo {
     pub id: String,

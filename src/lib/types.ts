@@ -104,3 +104,9 @@ export interface EditProgress {
   message?: string | null;
   error?: string | null;
 }
+
+export interface UpdateProgress {
+  progress: number;
+  message?: string | null;
+  error?: string | null;
+}
