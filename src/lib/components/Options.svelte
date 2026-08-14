@@ -22,6 +22,19 @@
   let mergeAudioVideo = false;
   let outputFormat = "mp4";
 
+  // Cada vez que se abre el modal se restablece la configuración inicial:
+  // nunca debe arrastrar las opciones de la descarga anterior.
+  $: if (open) {
+    step = "video";
+    selectedVideo = null;
+    selectedAudio = null;
+    fileName = "";
+    videoExt = "mp4";
+    audioExt = "mp3";
+    mergeAudioVideo = false;
+    outputFormat = "mp4";
+  }
+
   // Solo se puede juntar si hay formatos de video y de audio seleccionados.
   const canMerge = () => !!selectedVideo && !!selectedAudio;
 
