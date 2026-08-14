@@ -79,3 +79,18 @@ export interface DownloadOptions {
   merge: boolean;
   outputFormat: string;
 }
+
+export type DownloadStatus =
+  | "descargando"
+  | "convirtiendo"
+  | "uniendo"
+  | "completado"
+  | "error";
+
+export interface DownloadProgress {
+  id: string;
+  status: DownloadStatus;
+  progress: number;
+  message?: string | null;
+  error?: string | null;
+}
