@@ -1,12 +1,12 @@
 <script lang="ts">
   interface Props {
-    /** Progreso actual, de 0 a 100. */
+    /** Current progress, from 0 to 100. */
     progress: number;
-    /** Estado "procesando": activa el pulso del glow y el texto de procesamiento. */
+    /** "Processing" state: enables the glow pulse and the processing text. */
     processing?: boolean;
-    /** Texto de estado personalizado (por defecto "Cargando" / "Procesando"). */
+    /** Custom status text (defaults to "Cargando" / "Procesando"). */
     label?: string;
-    /** Etiqueta accesible del progressbar. */
+    /** Accessible label of the progressbar. */
     ariaLabel?: string;
   }
 
@@ -17,10 +17,10 @@
     ariaLabel = "Cargando aplicación",
   }: Props = $props();
 
-  // Radio del anillo y su circunferencia (viewBox 120)
+  // Ring radius and its circumference (viewBox 120)
   const R = 52;
   const CIRC = 2 * Math.PI * R;
-  // id único para el gradiente, para no colisionar si hay varios anillos en la página
+  // unique gradient id, to avoid collisions with multiple rings on the page
   const gradId = `ring-grad-${crypto.randomUUID()}`;
 
   const pct = $derived(Math.round(progress));
@@ -119,7 +119,7 @@
     color: var(--on-surface-variant);
   }
 
-  /* Estado de "procesamiento" durante la pausa en 50% */
+  /* "Processing" state during the pause at 50% */
   .ring.processing .status {
     color: var(--primary);
   }

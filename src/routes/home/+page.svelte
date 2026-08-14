@@ -15,7 +15,7 @@
     VideoInfo,
   } from "$lib/types";
 
-  interface ColaItem {
+  interface QueueItem {
     id: string;
     fileName: string;
     status: DownloadStatus;
@@ -24,7 +24,7 @@
     error: string | null;
   }
 
-  let carpeta = $state("");
+  let folder = $state("");
   let url = $state("");
   let info: VideoInfo | null = $state(null);
   let videoFormats: Format[] = $state([]);
@@ -33,18 +33,18 @@
   let loading = $state(false);
   let error = $state("");
 
-  // Cola de descargas: cada entrada se actualiza por `id` con los eventos
-  // `download://progress` que emite el backend desde cada hilo de descarga.
-  let downloads: ColaItem[] = $state([]);
+  // Download queue: each entry is updated by `id` with the
+  // `download://progress` events emitted by the backend from each download thread.
+  let downloads: QueueItem[] = $state([]);
   let unlisten: (() => void) | undefined;
 
   onMount(() => {
     let disposed = false;
 
-    // `listen` solo existe dentro de la ventana de Tauri. En un navegador
-    // normal (`pnpm dev`) no está el runtime de Tauri y esta llamada lanza
-    // una excepción que rompería la reactividad de la página, así que solo
-    // nos suscribimos cuando el runtime de Tauri está disponible.
+    // `listen` only exists inside the Tauri window. In a regular browser
+    // (`pnpm dev`) the Tauri runtime is missing and this call would throw an
+    // exception that breaks the page reactivity, so we only subscribe when the
+    // Tauri runtime is available.
     if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
       listen<DownloadProgress>("download://progress", (event) => {
         if (disposed) return;
@@ -62,10 +62,7 @@
         .then((fn) => {
           if (disposed) fn();
           else unlisten = fn;
-        })
-        .catch((e) =>
-          console.error("No se pudo suscribirse a los eventos de descarga:", e)
-        );
+        });
     }
 
     return () => {
@@ -74,31 +71,29 @@
     };
   });
 
-  // Quita la tarjeta de la cola y, si la descarga sigue en curso, le pide al
-  // backend que cancele el proceso y borre los archivos descargados.
-  async function quitarDescarga(id: string) {
+  // Removes the card from the queue and, if the download is still running,
+  // asks the backend to cancel the process and delete the downloaded files.
+  async function removeDownload(id: string) {
     downloads = downloads.filter((d) => d.id !== id);
     try {
-      await invoke("cancelar_descarga", { id });
+      await invoke("cancel_download", { id });
     } catch (e) {
       error = String(e);
-      console.error("Error al cancelar la descarga:", e);
     }
   }
 
-  async function select_folder() {
+  async function selectFolder() {
     try {
       const res = await invoke<string | null>("select_folder");
       if (res) {
-        carpeta = res;
+        folder = res;
       }
     } catch (e) {
       error = String(e);
-      console.error("Error al seleccionar la carpeta:", e);
     }
   }
 
-  async function descargar() {
+  async function fetchVideoInfo() {
     error = "";
     loading = true;
     try {
@@ -116,41 +111,39 @@
       optionsOpen = true;
     } catch (e) {
       error = String(e);
-      console.error("Error al obtener opciones:", e);
     } finally {
       loading = false;
     }
   }
 
-  async function handleDescargar(opts: DownloadOptions) {
+  async function handleDownload(opts: DownloadOptions) {
     error = "";
-    if (!carpeta) {
+    if (!folder) {
       error = "Selecciona una carpeta de salida primero";
-      console.error(error);
       return;
     }
     try {
-      // El comando ya no bloquea: lanza la descarga en un hilo y devuelve el id.
-      const id = await invoke<string>("descargar", {
+      // The command no longer blocks: it starts the download on a thread and
+      // returns the id.
+      const id = await invoke<string>("download", {
         url,
-        carpeta,
+        folder,
         ...opts,
         duration: info?.duration ?? null,
       });
       downloads.push({
         id,
         fileName: opts.fileName || info?.title || url,
-        status: "descargando",
+        status: "downloading",
         progress: 0,
         message: "Descargando…",
         error: null,
       });
       optionsOpen = false;
-      // Limpia el campo de URL para poder pegar la siguiente.
+      // Clears the URL field so the next link can be pasted.
       url = "";
     } catch (e) {
       error = String(e);
-      console.error("Error al lanzar la descarga:", e);
     }
   }
 </script>
@@ -167,7 +160,7 @@
       class="card download-card"
       onsubmit={(e) => {
         e.preventDefault();
-        descargar();
+        fetchVideoInfo();
       }}
     >
       <div class="field">
@@ -189,16 +182,16 @@
           <button
             type="button"
             class="btn btn--ghost"
-            onclick={select_folder}
+            onclick={selectFolder}
           >
             Seleccionar carpeta
           </button>
           <span
             class="body-md text-truncate path"
-            class:path-empty={!carpeta}
-            title={carpeta}
+            class:path-empty={!folder}
+            title={folder}
           >
-            {carpeta || "Ninguna carpeta seleccionada"}
+            {folder || "Ninguna carpeta seleccionada"}
           </span>
         </div>
       </div>
@@ -214,7 +207,7 @@
     {videoFormats}
     {audioFormats}
     title={info?.title ?? ""}
-    onDescargar={handleDescargar}
+    onDownload={handleDownload}
   />
 
   {#if downloads.length > 0}
@@ -235,7 +228,7 @@
               status={d.status}
               message={d.message}
               error={d.error}
-              onQuitar={() => quitarDescarga(d.id)}
+              onRemove={() => removeDownload(d.id)}
             />
           {/each}
         </div>
@@ -245,8 +238,8 @@
 
   <LoadingOverlay open={loading} />
 
-  <!-- Errores globales (obtener info, carpeta, lanzar descarga...). Los errores
-       de una descarga en concreto se muestran en su propia tarjeta. -->
+  <!-- Global errors (fetching info, folder, launching the download...). Errors
+       of a specific download are shown on its own card. -->
   <ErrorToast message={error} onDismiss={() => (error = "")} />
 </div>
 

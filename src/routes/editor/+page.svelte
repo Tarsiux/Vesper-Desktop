@@ -11,28 +11,28 @@
 
   let mode: Mode = $state("video");
 
-  // Archivo cargado
+  // Loaded file
   let filePath = $state("");
   let fileName = $state("");
   let mediaUrl = $state("");
   let duration = $state(0);
   let isVideo = $state(false);
 
-  // Recorte
+  // Trim
   let trimStart = $state(0);
   let trimEnd = $state(0);
   let currentTime = $state(0);
   let playing = $state(false);
 
-  // Visuales de la línea de tiempo
+  // Timeline visuals
   let thumbs: string[] = $state([]);
   let waveform: number[] = $state([]);
   let loadSeq = 0;
 
-  // Procesamiento
+  // Processing
   let processing = $state(false);
   let progress = $state(0);
-  let procMessage = $state("Recortando…");
+  let progressMessage = $state("Recortando…");
 
   let error = $state("");
   let notice = $state("");
@@ -44,24 +44,24 @@
 
   const mediaEl = $derived(videoEl);
   const visualMode = $derived(isVideo ? "video" : "audio");
-  // La línea de tiempo muestra fotogramas solo si el usuario eligió el editor
-  // de video y el archivo es realmente un video; en el resto de casos, waveform.
+  // The timeline shows frames only when the user picked the video editor and
+  // the file is actually a video; otherwise it shows the waveform.
   const timelineVisual = $derived(mode === "video" && isVideo ? "video" : "audio");
   const hasTrim = $derived(duration > 0 && trimEnd - trimStart < duration - 0.1);
   const canSave = $derived(!!filePath && !processing && hasTrim);
 
   onMount(() => {
-    // `listen` solo existe dentro de la ventana de Tauri; en un navegador
-    // normal (`pnpm dev`) no está el runtime y esta llamada lanzaría una
-    // excepción, así que solo nos suscribimos cuando Tauri está disponible.
+    // `listen` only exists inside the Tauri window; in a regular browser
+    // (`pnpm dev`) the runtime is missing and this call would throw an
+    // exception, so we only subscribe when Tauri is available.
     if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
       listen<EditProgress>("editor://progress", (event) => {
         const p = event.payload;
         if (p.id !== jobId) return;
-        if (p.status === "completado") {
+        if (p.status === "completed") {
           processing = false;
           notice = "Archivo recortado y sobrescrito correctamente";
-          recargarPreview();
+          reloadPreview();
         } else if (p.status === "error") {
           processing = false;
           const msg = p.error ?? "Error al recortar el archivo";
@@ -72,13 +72,10 @@
           }
         } else {
           progress = p.progress;
-          procMessage = p.message ?? "Recortando…";
+          progressMessage = p.message ?? "Recortando…";
         }
       })
-        .then((fn) => (unlisten = fn))
-        .catch((e) =>
-          console.error("No se pudo suscribirse a los eventos del editor:", e)
-        );
+        .then((fn) => (unlisten = fn));
     }
     return () => unlisten?.();
   });
@@ -86,10 +83,10 @@
   function switchMode(m: Mode) {
     if (processing || m === mode) return;
     mode = m;
-    limpiar();
+    clear();
   }
 
-  function limpiar() {
+  function clear() {
     filePath = "";
     fileName = "";
     mediaUrl = "";
@@ -111,7 +108,7 @@
     notice = "";
     try {
       const p = await invoke<string | null>("select_media_file", {
-        tipo: mode,
+        kind: mode,
       });
       if (!p) return;
       filePath = p;
@@ -122,18 +119,17 @@
       trimEnd = 0;
       currentTime = 0;
       playing = false;
-      // Vacía el src un tick para forzar la recarga con el archivo nuevo.
+      // Empties the src for one tick to force a reload with the new file.
       mediaUrl = "";
       await tick();
       mediaUrl = convertFileSrc(p);
     } catch (e) {
       error = String(e);
-      console.error("Error al seleccionar el archivo:", e);
     }
   }
 
-  // El <video> sirve también para reproducir audio; videoWidth > 0 indica que
-  // el archivo es realmente un video.
+  // The <video> element also plays audio; videoWidth > 0 means the file is
+  // actually a video.
   function onMetadata() {
     const v = videoEl;
     if (!v) return;
@@ -145,30 +141,29 @@
     trimEnd = d;
     currentTime = 0;
     const seq = ++loadSeq;
-    cargarVisuales(seq, isVideo);
+    loadVisuals(seq, isVideo);
   }
 
-  async function cargarVisuales(seq: number, esVideo: boolean) {
+  async function loadVisuals(seq: number, isVideo: boolean) {
     const d = duration;
-    if (mode === "video" && esVideo) {
+    if (mode === "video" && isVideo) {
       try {
-        const res = await invoke<string[]>("generar_thumbnails", {
+        const res = await invoke<string[]>("generate_thumbnails", {
           path: filePath,
           count: 16,
           duration: d,
         });
         if (seq === loadSeq) thumbs = res;
-      } catch (e) {
-        console.error("No se pudieron generar las vistas previas:", e);
+      } catch {
         if (seq === loadSeq) thumbs = [];
       }
     } else {
-      const w = await calcularWaveform();
+      const w = await computeWaveform();
       if (seq === loadSeq) waveform = w;
     }
   }
 
-  async function calcularWaveform(): Promise<number[]> {
+  async function computeWaveform(): Promise<number[]> {
     if (!mediaUrl) return [];
     try {
       const res = await fetch(mediaUrl);
@@ -200,8 +195,7 @@
       } finally {
         ctx.close();
       }
-    } catch (e) {
-      console.error("No se pudo calcular el waveform:", e);
+    } catch {
       return [];
     }
   }
@@ -210,7 +204,7 @@
     const el = mediaEl;
     if (!el) return;
     currentTime = el.currentTime;
-    // La reproducción se detiene al llegar al final del recorte.
+    // Playback stops when reaching the end of the trim.
     if (playing && el.currentTime >= trimEnd - 0.05) {
       el.pause();
       playing = false;
@@ -230,18 +224,18 @@
       el.pause();
       playing = false;
     } else {
-      // Si el playhead quedó fuera del recorte, vuelve al inicio del mismo.
+      // If the playhead ended up outside the trim, jump back to its start.
       if (el.currentTime >= trimEnd - 0.05 || el.currentTime < trimStart) {
         el.currentTime = trimStart;
       }
       el.play()
         .then(() => (playing = true))
-        .catch((e) => console.error("No se pudo reproducir:", e));
+        .catch(() => {});
     }
   }
 
-  // Mantiene el elemento sincronizado con el playhead (arrastre/búsqueda),
-  // siempre dentro de la zona recortada.
+  // Keeps the element in sync with the playhead (drag/seek), always inside
+  // the trimmed zone.
   $effect(() => {
     const t = currentTime;
     const el = mediaEl;
@@ -258,7 +252,7 @@
     }
   }
 
-  function restablecer() {
+  function resetTrim() {
     if (processing) return;
     trimStart = 0;
     trimEnd = duration;
@@ -271,43 +265,42 @@
     error = "";
   }
 
-  function guardar() {
+  function requestSave() {
     if (!canSave) return;
     confirmOpen = true;
   }
 
-  async function confirmarGuardar() {
+  async function confirmSave() {
     confirmOpen = false;
     error = "";
     notice = "";
     processing = true;
     progress = 0;
-    procMessage = "Recortando…";
+    progressMessage = "Recortando…";
     try {
-      const id = await invoke<string>("recortar_media", {
+      const id = await invoke<string>("trim_media", {
         path: filePath,
         start: trimStart,
         end: trimEnd,
-        esVideo: isVideo,
+        isVideo: isVideo,
       });
       jobId = id;
     } catch (e) {
       processing = false;
       error = String(e);
-      console.error("Error al lanzar el recorte:", e);
     }
   }
 
-  async function cancelarRecorte() {
+  async function cancelTrim() {
     try {
-      await invoke("cancelar_recorte", { id: jobId });
-    } catch (e) {
-      console.error("Error al cancelar el recorte:", e);
+      await invoke("cancel_trim", { id: jobId });
+    } catch {
+      // The cancellation failed: nothing to notify the user about.
     }
   }
 
-  // Tras guardar, el archivo cambió en disco: recarga la previsualización.
-  function recargarPreview() {
+  // After saving, the file changed on disk: reload the preview.
+  function reloadPreview() {
     mediaUrl = "";
     setTimeout(() => {
       mediaUrl = convertFileSrc(filePath);
@@ -419,8 +412,8 @@
           </button>
         </div>
 
-        <!-- El elemento <video> se mantiene montado aunque sea audio (display
-             none): así siempre carga los metadatos y detectamos el tipo. -->
+        <!-- The <video> element stays mounted even for audio (display none) so
+             it always loads metadata and we can detect the file type. -->
         <div class="preview" class:preview-hidden={!isVideo}>
           <video
             bind:this={videoEl}
@@ -487,12 +480,12 @@
           <button
             class="btn btn--outline"
             type="button"
-            onclick={restablecer}
+            onclick={resetTrim}
             disabled={processing || !hasTrim}
           >
             Restablecer
           </button>
-          <button class="btn btn--primary" type="button" onclick={guardar} disabled={!canSave}>
+          <button class="btn btn--primary" type="button"            onclick={requestSave} disabled={!canSave}>
             Guardar
           </button>
         </div>
@@ -502,14 +495,13 @@
 
   {#if processing}
     <div class="processing-panel card" role="status" aria-live="polite">
-      <div class="row row--between">
-        <p class="body-md">{procMessage}</p>
+      <div class="row row--between">            <p class="body-md">{progressMessage}</p>
         <span class="label-sm">{Math.round(progress)}%</span>
       </div>
       <div class="progress progress--pulse">
         <div class="progress__fill" style={`width: ${progress}%`}></div>
       </div>
-      <button class="btn btn--ghost btn--sm" type="button" onclick={cancelarRecorte}>
+      <button class="btn btn--ghost btn--sm" type="button"            onclick={cancelTrim}>
         Cancelar
       </button>
     </div>
@@ -555,7 +547,7 @@
           >
             Cancelar
           </button>
-          <button class="btn btn--primary" type="button" onclick={confirmarGuardar}>
+          <button class="btn btn--primary" type="button"            onclick={confirmSave}>
             Sobrescribir
           </button>
         </div>
@@ -591,7 +583,7 @@
     margin-bottom: var(--space-4);
   }
 
-  /* Estado vacío: antes de elegir archivo */
+  /* Empty state: before choosing a file */
   .empty-state {
     display: flex;
     flex-direction: column;
@@ -627,7 +619,7 @@
     height: 36px;
   }
 
-  /* Tarjeta del editor */
+  /* Editor card */
   .editor-card {
     display: flex;
     flex-direction: column;
@@ -706,7 +698,7 @@
     margin-top: var(--space-2);
   }
 
-  /* Panel de progreso mientras se recorta */
+  /* Progress panel while trimming */
   .processing-panel {
     position: fixed;
     left: 50%;
@@ -724,7 +716,7 @@
     width: min(480px, 100%);
   }
 
-  /* Aviso de éxito */
+  /* Success notice */
   .notice-toast {
     position: fixed;
     top: var(--space-4);

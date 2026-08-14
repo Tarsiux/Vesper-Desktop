@@ -81,10 +81,10 @@ export interface DownloadOptions {
 }
 
 export type DownloadStatus =
-  | "descargando"
-  | "convirtiendo"
-  | "uniendo"
-  | "completado"
+  | "downloading"
+  | "converting"
+  | "merging"
+  | "completed"
   | "error";
 
 export interface DownloadProgress {
@@ -95,7 +95,7 @@ export interface DownloadProgress {
   error?: string | null;
 }
 
-export type EditStatus = "procesando" | "completado" | "error";
+export type EditStatus = "processing" | "completed" | "error";
 
 export interface EditProgress {
   id: string;

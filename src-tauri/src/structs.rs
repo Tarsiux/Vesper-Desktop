@@ -42,10 +42,10 @@ pub struct Format {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DownloadStatus {
-    Descargando,
-    Convirtiendo,
-    Uniendo,
-    Completado,
+    Downloading,
+    Converting,
+    Merging,
+    Completed,
     Error,
 }
 
@@ -68,8 +68,8 @@ pub struct UpdateProgress {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EditStatus {
-    Procesando,
-    Completado,
+    Processing,
+    Completed,
     Error,
 }
 

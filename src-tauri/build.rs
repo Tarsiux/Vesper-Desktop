@@ -1,11 +1,12 @@
 fn main() {
-    // La app siempre arranca como administrador (manifest `requireAdministrator`):
-    // Windows muestra el UAC al abrirla y, si el usuario lo rechaza, la app no
-    // se inicia. Así `yt-dlp -U` (lanzado al 50% del splash) puede sobrescribir
-    // el binario en la ruta de instalación sin elevación adicional.
+    // The app always starts as administrator (the `requireAdministrator`
+    // manifest): Windows shows the UAC prompt when opening it and, if the user
+    // rejects it, the app does not start. This way `yt-dlp -U` (launched at 50%
+    // of the splash) can overwrite the binary in the install path without
+    // extra elevation.
     //
-    // Ojo: hay que conservar la dependencia de Common Controls v6 — sin ella se
-    // rompen los diálogos nativos de rfd (select_folder, select_media_file...).
+    // Note: keep the Common Controls v6 dependency — without it the native rfd
+    // dialogs (select_folder, select_media_file...) break.
     let mut windows = tauri_build::WindowsAttributes::new();
     windows = windows.app_manifest(
         r#"

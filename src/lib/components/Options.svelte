@@ -6,9 +6,9 @@
   export let videoFormats: Format[] = [];
   export let audioFormats: Format[] = [];
   export let title = "";
-  export let onDescargar: ((opts: DownloadOptions) => void) | undefined = undefined;
+  export let onDownload: ((opts: DownloadOptions) => void) | undefined = undefined;
 
-  let step: "video" | "audio" | "ajustes" = "video";
+  let step: "video" | "audio" | "settings" = "video";
   let selectedVideo: string | null = null;
   let selectedAudio: string | null = null;
 
@@ -19,11 +19,11 @@
   let fileName = "";
   let videoExt = "mp4";
   let audioExt = "mp3";
-  let mergeAudioVideo = false;
+  let mergeStreams = false;
   let outputFormat = "mp4";
 
-  // Cada vez que se abre el modal se restablece la configuración inicial:
-  // nunca debe arrastrar las opciones de la descarga anterior.
+  // Every time the modal opens, reset to the initial configuration: it must
+  // never carry over options from the previous download.
   $: if (open) {
     step = "video";
     selectedVideo = null;
@@ -31,17 +31,17 @@
     fileName = "";
     videoExt = "mp4";
     audioExt = "mp3";
-    mergeAudioVideo = false;
+    mergeStreams = false;
     outputFormat = "mp4";
   }
 
-  // Solo se puede juntar si hay formatos de video y de audio seleccionados.
+  // Merging is only possible when both video and audio formats are selected.
   const canMerge = () => !!selectedVideo && !!selectedAudio;
 
-  // Si falta video o audio, el merge se apaga solo (las variables van
-  // explícitas aquí para que Svelte las rastree).
-  $: if (mergeAudioVideo && (!selectedVideo || !selectedAudio)) {
-    mergeAudioVideo = false;
+  // If video or audio is missing, merging turns itself off (the variables are
+  // listed explicitly here so Svelte tracks them).
+  $: if (mergeStreams && (!selectedVideo || !selectedAudio)) {
+    mergeStreams = false;
   }
 
   const videoExtensions = ["mp4", "mkv", "webm", "avi", "mov"];
@@ -50,21 +50,21 @@
 
   function nextStep() {
     if (step === "video") step = "audio";
-    else if (step === "audio") step = "ajustes";
+    else if (step === "audio") step = "settings";
   }
 
-  function cerrar() {
+  function close() {
     open = false;
   }
 
-  function handleDescargar() {
-    onDescargar?.({
+  function handleDownload() {
+    onDownload?.({
       fileName: fileName || title,
       videoFormatId: selectedVideo,
       audioFormatId: selectedAudio,
       videoExt,
       audioExt,
-      merge: mergeAudioVideo,
+      merge: mergeStreams,
       outputFormat,
     });
   }
@@ -90,7 +90,7 @@
           <p class="label-sm text-muted">Opciones de descarga</p>
           <h2 class="headline-md modal-title">{title}</h2>
         </div>
-        <button class="modal-close" type="button" on:click={cerrar} aria-label="Cerrar">
+        <button class="modal-close" type="button" on:click={close} aria-label="Cerrar">
           &times;
         </button>
       </header>
@@ -115,9 +115,9 @@
           </button>
           <button
             class="chip"
-            class:chip--active={step === "ajustes"}
+            class:chip--active={step === "settings"}
             type="button"
-            on:click={() => (step = "ajustes")}
+            on:click={() => (step = "settings")}
           >
             Ajustes
           </button>
@@ -199,7 +199,7 @@
           </table>
         {/if}
 
-        {#if step === "ajustes"}
+        {#if step === "settings"}
           <div class="stack settings">
             <div class="field">
               <label class="label-sm" for="file-name">Nombre del archivo</label>
@@ -233,16 +233,16 @@
             <div>
               <button
                 class="chip"
-                class:chip--active={mergeAudioVideo}
+                class:chip--active={mergeStreams}
                 type="button"
                 disabled={!canMerge()}
-                on:click={() => (mergeAudioVideo = !mergeAudioVideo)}
+                on:click={() => (mergeStreams = !mergeStreams)}
               >
                 Juntar audio y video
               </button>
             </div>
 
-            {#if mergeAudioVideo}
+            {#if mergeStreams}
               <div class="field">
                 <span class="label-sm">Formato de salida del video final</span>
                 <Select options={outputFormats} bind:value={outputFormat} />
@@ -253,11 +253,11 @@
       </div>
 
       <footer class="modal-footer">
-        <button class="btn btn--outline" type="button" on:click={cerrar}>Cerrar</button>
-        {#if step !== "ajustes"}
+        <button class="btn btn--outline" type="button" on:click={close}>Cerrar</button>
+        {#if step !== "settings"}
           <button class="btn btn--primary" type="button" on:click={nextStep}>Siguiente</button>
         {:else}
-          <button class="btn btn--primary" type="button" on:click={handleDescargar}>
+          <button class="btn btn--primary" type="button" on:click={handleDownload}>
             Descargar
           </button>
         {/if}

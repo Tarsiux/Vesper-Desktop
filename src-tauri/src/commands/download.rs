@@ -8,35 +8,35 @@ use tauri::{Emitter, Manager};
 
 use crate::structs::{DownloadProgress, DownloadStatus, UpdateProgress, VideoInfo};
 
-// Permite lanzar procesos sin ventana de consola en Windows (CREATE_NO_WINDOW).
+// Allows spawning processes without a console window on Windows (CREATE_NO_WINDOW).
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
-/// Nombre del evento emitido al frontend con el progreso en vivo.
+/// Name of the event emitted to the frontend with live progress.
 const EVENT: &str = "download://progress";
 
-/// Contador para que los ids de descarga sean únicos entre sí.
+/// Counter so download ids stay unique among themselves.
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// Identifica una descarga activa para poder cancelarla: un flag de cancelación
-/// y el pid del proceso hijo (yt-dlp/ffmpeg) que se está ejecutando ahora mismo.
+/// Identifies an active download so it can be cancelled: a cancellation flag
+/// and the pid of the currently running child process (yt-dlp/ffmpeg).
 #[derive(Clone)]
 struct CancelHandle {
     flag: Arc<AtomicBool>,
     pid: Arc<Mutex<Option<u32>>>,
 }
 
-/// Descargas en curso, por id.
+/// Active downloads, keyed by id.
 static ACTIVE: OnceLock<Mutex<HashMap<String, CancelHandle>>> = OnceLock::new();
 
 fn active() -> &'static Mutex<HashMap<String, CancelHandle>> {
     ACTIVE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Crea un `Command` que no abre ventana de consola al lanzar procesos de
-/// consola (yt-dlp/ffmpeg/taskkill) desde la app gráfica. En release la app es
-/// GUI (sin consola) y Windows, sin este flag, crea una ventana de cmd nueva
-/// para cada proceso hijo; `CREATE_NO_WINDOW` (0x08000000) la suprime.
+/// Creates a `Command` that does not open a console window when spawning
+/// console processes (yt-dlp/ffmpeg/taskkill) from the GUI app. In release the
+/// app is a GUI (no console) and Windows, without this flag, opens a new cmd
+/// window for every child process; `CREATE_NO_WINDOW` (0x08000000) suppresses it.
 pub(crate) fn hidden_cmd(program: impl AsRef<std::ffi::OsStr>) -> Command {
     let mut cmd = Command::new(program);
     #[cfg(windows)]
@@ -46,7 +46,7 @@ pub(crate) fn hidden_cmd(program: impl AsRef<std::ffi::OsStr>) -> Command {
     cmd
 }
 
-/// Mata el proceso y todo su árbol de hijos (yt-dlp puede lanzar ffmpeg interno).
+/// Kills the process and its whole child tree (yt-dlp may spawn an internal ffmpeg).
 pub(crate) fn kill_tree(pid: u32) {
     #[cfg(windows)]
     {
@@ -91,14 +91,14 @@ fn emit(
     );
 }
 
-/// Ejecuta yt-dlp leyendo su salida en vivo y emitiendo el porcentaje real de
-/// descarga (líneas `[download]  xx.x%`), mapeado a la franja `range` del
-/// progreso global (0-100).
+/// Runs yt-dlp reading its output live and emitting the real download
+/// percentage (`[download]  xx.x%` lines), mapped to the `range` slice of the
+/// overall progress (0-100).
 ///
-/// Ojo: yt-dlp escribe el progreso en **stdout** y los errores en stderr. Hay
-/// que drenar AMBOS pipes: si no se lee stdout, el buffer (64 KB) se llena,
-/// yt-dlp se bloquea escribiendo y la descarga se queda colgada sin emitir
-/// ningún evento.
+/// Note: yt-dlp writes progress to **stdout** and errors to stderr. Both pipes
+/// must be drained: if stdout is not read, the buffer (64 KB) fills up,
+/// yt-dlp blocks while writing and the download hangs without emitting any
+/// event.
 fn run_ytdlp(
     cmd: &Path,
     args: &[String],
@@ -122,8 +122,8 @@ fn run_ytdlp(
 
     *cancel.pid.lock().unwrap() = Some(child.id());
 
-    // Si la cancelación llegó justo durante el spawn (antes de registrar el
-    // pid), la matamos aquí mismo.
+    // If the cancellation arrived right during spawn (before the pid was
+    // registered), kill it here.
     if cancel.flag.load(Ordering::SeqCst) {
         kill_tree(child.id());
         let _ = child.wait();
@@ -131,7 +131,7 @@ fn run_ytdlp(
         return Err("Descarga cancelada".into());
     }
 
-    // stderr (errores) se lee en un hilo aparte para no bloquear.
+    // stderr (errors) is drained on a separate thread so nothing blocks.
     let stderr = child.stderr.take().expect("stderr piped");
     let err_handle = std::thread::spawn(move || {
         let mut buf = String::new();
@@ -144,7 +144,7 @@ fn run_ytdlp(
         buf
     });
 
-    // stdout (progreso) se lee aquí, en vivo.
+    // stdout (progress) is read here, live.
     let stdout = child.stdout.take().expect("stdout piped");
     for line in BufReader::new(stdout).lines() {
         let line = match line {
@@ -153,7 +153,7 @@ fn run_ytdlp(
         };
         if let Some(pct) = parse_percent(&line) {
             let progress = range.0 + (pct / 100.0) * (range.1 - range.0);
-            emit(app, id, DownloadStatus::Descargando, progress, None, None);
+            emit(app, id, DownloadStatus::Downloading, progress, None, None);
         }
     }
 
@@ -171,9 +171,9 @@ fn run_ytdlp(
     Ok(())
 }
 
-/// Ejecuta ffmpeg con `-progress pipe:1` y emite el progreso estimado según la
-/// duración de la entrada (pasada desde el frontend). Sin duración disponible,
-/// solo emite el inicio de la fase (el anillo queda en modo "procesando").
+/// Runs ffmpeg with `-progress pipe:1` and emits the estimated progress based
+/// on the input duration (passed from the frontend). Without a duration, only
+/// the phase start is emitted (the ring stays in "processing" mode).
 fn run_ffmpeg(
     cmd: &Path,
     args: &[String],
@@ -260,7 +260,7 @@ fn run_ffmpeg(
     }
 }
 
-/// Extrae el porcentaje de una línea de progreso de yt-dlp
+/// Extracts the percentage from a yt-dlp progress line
 /// (`[download]  45.3% of ~2.5MiB at ...`).
 fn parse_percent(line: &str) -> Option<f64> {
     let idx = line.find("[download]")?;
@@ -299,10 +299,10 @@ fn find_output(dir: &Path, base: &str) -> Result<PathBuf, String> {
     Err(format!("No se encontró el archivo descargado: {base}"))
 }
 
-/// ¿Hace falta pasar por ffmpeg? Solo si el archivo descargado no está ya en
-/// la extensión de salida pedida (p. ej. un mp4 descargado con mp4 de salida):
-/// en ese caso convertirlo sería un no-op y ffmpeg fallaría con
-/// "same as Input" si la ruta de salida coincide con la de entrada.
+/// Is ffmpeg needed? Only when the downloaded file is not already in the
+/// requested output extension (e.g. an mp4 downloaded with mp4 as output):
+/// converting would be a no-op and ffmpeg would fail with "same as Input"
+/// when the output path matches the input path.
 fn needs_conversion(src: &Path, target: &Path) -> bool {
     let src_ext = src
         .extension()
@@ -317,8 +317,8 @@ fn needs_conversion(src: &Path, target: &Path) -> bool {
     src_ext != tgt_ext
 }
 
-/// Mueve `src` a `dst` (borrando un `dst` previo si existiera, como haría
-/// ffmpeg con `-y`). Si ya están en la misma ruta, no hace nada.
+/// Moves `src` to `dst` (removing a previous `dst` if it exists, like ffmpeg
+/// with `-y`). Does nothing when both paths are already the same.
 fn rename_if_needed(src: &Path, dst: &Path) -> Result<(), String> {
     if src == dst {
         return Ok(());
@@ -336,10 +336,10 @@ fn rename_if_needed(src: &Path, dst: &Path) -> Result<(), String> {
     })
 }
 
-/// Convierte un nombre de archivo arbitrario en uno válido en Windows:
-/// sustituye los caracteres prohibidos (`< > : " / \ | ? *`) y los de control
-/// por `_`, elimina los espacios/puntos finales (prohibidos en Windows) y evita
-/// los nombres reservados del sistema (CON, PRN, AUX, NUL, COM1-9, LPT1-9).
+/// Converts an arbitrary file name into a Windows-valid one: replaces the
+/// forbidden characters (`< > : " / \ | ? *`) and control characters with `_`,
+/// trims trailing spaces/dots (forbidden on Windows) and avoids the reserved
+/// system names (CON, PRN, AUX, NUL, COM1-9, LPT1-9).
 fn sanitize_windows_filename(name: &str) -> String {
     let mut out: String = name
         .chars()
@@ -353,12 +353,12 @@ fn sanitize_windows_filename(name: &str) -> String {
         })
         .collect();
 
-    // Windows no permite espacios ni puntos al final del nombre.
+    // Windows does not allow trailing spaces or dots in the name.
     while out.ends_with(' ') || out.ends_with('.') {
         out.pop();
     }
 
-    // Evita los nombres reservados de dispositivo.
+    // Avoids reserved device names.
     let stem = out.split('.').next().unwrap_or("").to_ascii_uppercase();
     let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
         || (stem.len() == 4
@@ -425,9 +425,9 @@ pub fn show_options_video(app: tauri::AppHandle, url: String) -> Result<VideoInf
     let value: serde_json::Value =
         serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())?;
 
-    // Con --no-playlist, un enlace "video + playlist" devuelve solo el video.
-    // Pero si el enlace es de una playlist completa, yt-dlp devuelve el JSON de
-    // la playlist (no deserializable como VideoInfo): damos un mensaje claro.
+    // With --no-playlist, a "video + playlist" link returns only the video.
+    // But a full playlist link makes yt-dlp return the playlist JSON (not
+    // deserializable as VideoInfo): give a clear message in that case.
     let kind = value
         .get("_type")
         .or_else(|| value.get("type"))
@@ -447,14 +447,14 @@ pub fn show_options_video(app: tauri::AppHandle, url: String) -> Result<VideoInf
     Ok(info)
 }
 
-/// Lanza la descarga en un hilo separado y devuelve al instante un `id` que el
-/// frontend usa para seguir el progreso vía eventos `download://progress`.
-/// Así varias descargas corren en paralelo sin bloquear la UI.
+/// Starts the download on a separate thread and immediately returns an `id`
+/// the frontend uses to follow progress via `download://progress` events.
+/// This lets multiple downloads run in parallel without blocking the UI.
 #[tauri::command]
-pub fn descargar(
+pub fn download(
     app: tauri::AppHandle,
     url: String,
-    carpeta: String,
+    folder: String,
     file_name: String,
     video_format_id: Option<String>,
     audio_format_id: Option<String>,
@@ -464,7 +464,7 @@ pub fn descargar(
     output_format: String,
     duration: Option<f64>,
 ) -> Result<String, String> {
-    let dir = PathBuf::from(&carpeta);
+    let dir = PathBuf::from(&folder);
 
     if !dir.is_dir() {
         return Err("La carpeta de salida no existe".into());
@@ -484,7 +484,7 @@ pub fn descargar(
     let id = new_id();
     let thread_id = id.clone();
 
-    // Registramos la descarga como activa para poder cancelarla por id.
+    // Register the download as active so it can be cancelled by id.
     let handle = CancelHandle {
         flag: Arc::new(AtomicBool::new(false)),
         pid: Arc::new(Mutex::new(None)),
@@ -496,7 +496,7 @@ pub fn descargar(
             &app,
             &thread_id,
             url,
-            carpeta,
+            folder,
             file_name,
             video_format_id,
             audio_format_id,
@@ -518,10 +518,10 @@ pub fn descargar(
     Ok(id)
 }
 
-/// Cancela una descarga en curso: mata el proceso (yt-dlp/ffmpeg) y el hilo
-/// se encarga de borrar los archivos descargados hasta el momento.
+/// Cancels an active download: kills the process (yt-dlp/ffmpeg) and the
+/// thread deletes the files downloaded so far.
 #[tauri::command]
-pub fn cancelar_descarga(id: String) {
+pub fn cancel_download(id: String) {
     if let Some(handle) = active().lock().unwrap().remove(&id) {
         handle.flag.store(true, Ordering::SeqCst);
         if let Some(pid) = handle.pid.lock().unwrap().take() {
@@ -530,7 +530,7 @@ pub fn cancelar_descarga(id: String) {
     }
 }
 
-/// Nombre del evento emitido al frontend con el progreso de la actualización.
+/// Name of the event emitted to the frontend with the update progress.
 const UPDATE_EVENT: &str = "update://progress";
 
 fn emit_update(app: &tauri::AppHandle, progress: f64, message: Option<&str>, error: Option<&str>) {
@@ -544,16 +544,16 @@ fn emit_update(app: &tauri::AppHandle, progress: f64, message: Option<&str>, err
     );
 }
 
-/// Actualiza yt-dlp en su propia ruta ejecutando `yt-dlp -U`.
+/// Updates yt-dlp in place by running `yt-dlp -U`.
 ///
-/// La app corre como administrador (manifest `requireAdministrator` en
-/// build.rs), así que el binario empaquetado en la ruta de instalación se puede
-/// sobrescribir sin elevación adicional. El comando bloquea hasta que termina
-/// (corre en el hilo de comandos de Tauri, no en la UI) y va emitiendo el
-/// progreso real vía `update://progress`: el propio actualizador de yt-dlp
-/// reutiliza el descargador y pinta líneas `[download] xx.x%` en stdout.
+/// The app runs as administrator (the `requireAdministrator` manifest in
+/// build.rs), so the binary bundled in the install path can be overwritten
+/// without extra elevation. The command blocks until it finishes (it runs on
+/// Tauri's command thread, not the UI) and keeps emitting the real progress
+/// via `update://progress`: yt-dlp's own updater reuses the downloader and
+/// prints `[download] xx.x%` lines to stdout.
 #[tauri::command]
-pub fn actualizar_ytdlp(app: tauri::AppHandle) -> Result<(), String> {
+pub fn update_ytdlp(app: tauri::AppHandle) -> Result<(), String> {
     let yt_dlp = binary_path(&app, "yt-dlp")?;
 
     emit_update(&app, 0.0, Some("Comprobando actualización…"), None);
@@ -565,8 +565,8 @@ pub fn actualizar_ytdlp(app: tauri::AppHandle) -> Result<(), String> {
         .spawn()
         .map_err(|e| format!("No se pudo lanzar yt-dlp -U: {e}"))?;
 
-    // stderr (errores) se lee en un hilo aparte para no bloquear, igual que en
-    // las descargas: si no se drena, el buffer se llena y yt-dlp se cuelga.
+    // stderr (errors) is drained on a separate thread so nothing blocks, same
+    // as downloads: if it is not drained the buffer fills up and yt-dlp hangs.
     let stderr = child.stderr.take().expect("stderr piped");
     let err_handle = std::thread::spawn(move || {
         let mut buf = String::new();
@@ -579,7 +579,7 @@ pub fn actualizar_ytdlp(app: tauri::AppHandle) -> Result<(), String> {
         buf
     });
 
-    // stdout (progreso del descargador del actualizador) se lee en vivo.
+    // stdout (progress from the updater's downloader) is read live.
     let stdout = child.stdout.take().expect("stdout piped");
     for line in BufReader::new(stdout).lines() {
         let line = match line {
@@ -604,8 +604,8 @@ pub fn actualizar_ytdlp(app: tauri::AppHandle) -> Result<(), String> {
         return Err(msg);
     }
 
-    // "ya está actualizado" sale por esta vía sin líneas `[download]`: se
-    // emite el 100% igualmente y el splash navega a /home.
+    // "already up to date" comes out through this path without `[download]`
+    // lines: still emit 100% and the splash navigates to /home.
     emit_update(&app, 100.0, Some("yt-dlp actualizado"), None);
     Ok(())
 }
@@ -615,7 +615,7 @@ fn run_download(
     app: &tauri::AppHandle,
     id: &str,
     url: String,
-    carpeta: String,
+    folder: String,
     file_name: String,
     video_format_id: Option<String>,
     audio_format_id: Option<String>,
@@ -632,7 +632,7 @@ fn run_download(
         app,
         id,
         url,
-        carpeta.clone(),
+        folder.clone(),
         file_name.clone(),
         video_format_id,
         audio_format_id,
@@ -646,18 +646,17 @@ fn run_download(
         cancel,
     );
 
-    // Si la descarga se canceló, elimina los archivos descargados hasta ahora
-    // (parciales .part, video/audio ya bajados, etc.).
+    // If the download was cancelled, delete the files downloaded so far
+    // (.part partials, already-downloaded video/audio, etc.).
     if cancel.flag.load(Ordering::SeqCst) {
-        cleanup_download_files(Path::new(&carpeta), id);
+        cleanup_download_files(Path::new(&folder), id);
     }
 
     result
 }
 
-/// Borra todos los archivos temporales de una descarga cancelada: cualquier
-/// archivo que empiece por `{id}_video` o `{id}_audio` (incluye los parciales
-/// `.part` de yt-dlp).
+/// Deletes every temp file of a cancelled download: any file starting with
+/// `{id}_video` or `{id}_audio` (including yt-dlp `.part` partials).
 fn cleanup_download_files(dir: &Path, base: &str) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -677,7 +676,7 @@ fn run_download_inner(
     app: &tauri::AppHandle,
     id: &str,
     url: String,
-    carpeta: String,
+    folder: String,
     file_name: String,
     video_format_id: Option<String>,
     audio_format_id: Option<String>,
@@ -692,28 +691,28 @@ fn run_download_inner(
 ) -> Result<(), String> {
     let yt_dlp = binary_path(app, "yt-dlp")?;
     let ffmpeg = binary_path(app, "ffmpeg")?;
-    let dir = PathBuf::from(&carpeta);
+    let dir = PathBuf::from(&folder);
 
-    // El nombre final se sanea para que sea válido en Windows (el usuario puede
-    // escribir `:` u otros caracteres prohibidos que romperían las rutas).
+    // The final name is sanitized to be Windows-valid (the user may type `:`
+    // or other forbidden characters that would break paths).
     let safe_name = sanitize_windows_filename(&file_name);
-    // Los temporales usan el id como nombre interno neutro: yt-dlp nunca lo
-    // modifica (a diferencia del nombre del usuario, que sanea por su cuenta),
-    // así que siempre los encontramos; además dos descargas simultáneas con el
-    // mismo nombre de archivo no colisionan.
+    // Temp files use the id as a neutral internal name: yt-dlp never modifies
+    // it (unlike the user name, which it sanitizes on its own), so we always
+    // find them; two simultaneous downloads with the same file name also never
+    // collide.
     let video_out = format!("{id}_video.%(ext)s");
     let audio_out = format!("{id}_audio.%(ext)s");
 
     let mut video_file: Option<PathBuf> = None;
     let mut audio_file: Option<PathBuf> = None;
 
-    // Descarga de video: ocupa del 0% al 40% (o al 70% si no hay audio).
+    // Video download: goes from 0% to 40% (or 70% when there is no audio).
     if has_video {
         let vid = video_format_id.unwrap();
         emit(
             app,
             id,
-            DownloadStatus::Descargando,
+            DownloadStatus::Downloading,
             0.0,
             Some("Descargando video…"),
             None,
@@ -741,13 +740,13 @@ fn run_download_inner(
         video_file = Some(find_output(&dir, &format!("{id}_video"))?);
     }
 
-    // Descarga de audio: del 40% al 70%.
+    // Audio download: from 40% to 70%.
     if has_audio {
         let aud = audio_format_id.unwrap();
         emit(
             app,
             id,
-            DownloadStatus::Descargando,
+            DownloadStatus::Downloading,
             40.0,
             Some("Descargando audio…"),
             None,
@@ -778,11 +777,10 @@ fn run_download_inner(
         (Some(vf), Some(af)) => {
             if merge {
                 let final_path = dir.join(format!("{safe_name}.{output_format}"));
-                println!("Juntando audio y video y convirtiendo a .{output_format}...");
                 emit(
                     app,
                     id,
-                    DownloadStatus::Uniendo,
+                    DownloadStatus::Merging,
                     70.0,
                     Some("Uniendo…"),
                     None,
@@ -805,7 +803,7 @@ fn run_download_inner(
                     &dir,
                     app,
                     id,
-                    DownloadStatus::Uniendo,
+                    DownloadStatus::Merging,
                     (70.0, 99.0),
                     duration,
                     cancel,
@@ -813,15 +811,14 @@ fn run_download_inner(
                 let _ = std::fs::remove_file(vf);
                 let _ = std::fs::remove_file(af);
             } else {
-                // Video por separado: solo se convierte si la extensión
-                // descargada no es ya la pedida.
+                // Separate video: only converted when the downloaded extension
+                // is not already the requested one.
                 let video_final = dir.join(format!("{safe_name}_video.{video_ext}"));
                 if needs_conversion(vf, &video_final) {
-                    println!("Convirtiendo video a .{video_ext}...");
                     emit(
                         app,
                         id,
-                        DownloadStatus::Convirtiendo,
+                        DownloadStatus::Converting,
                         70.0,
                         Some("Convirtiendo…"),
                         None,
@@ -839,25 +836,24 @@ fn run_download_inner(
                         &dir,
                         app,
                         id,
-                        DownloadStatus::Convirtiendo,
+                        DownloadStatus::Converting,
                         (70.0, 84.5),
                         duration,
                         cancel,
                     )?;
                     let _ = std::fs::remove_file(vf);
                 } else {
-                    // Ya está en .{video_ext}: sin ffmpeg.
+                    // Already in .{video_ext}: no ffmpeg needed.
                     rename_if_needed(vf, &video_final)?;
                 }
 
-                // Audio por separado.
+                // Separate audio.
                 let audio_final = dir.join(format!("{safe_name}_audio.{audio_ext}"));
                 if needs_conversion(af, &audio_final) {
-                    println!("Convirtiendo audio a .{audio_ext}...");
                     emit(
                         app,
                         id,
-                        DownloadStatus::Convirtiendo,
+                        DownloadStatus::Converting,
                         84.5,
                         Some("Convirtiendo…"),
                         None,
@@ -875,42 +871,39 @@ fn run_download_inner(
                         &dir,
                         app,
                         id,
-                        DownloadStatus::Convirtiendo,
+                        DownloadStatus::Converting,
                         (84.5, 99.0),
                         duration,
                         cancel,
                     )?;
                     let _ = std::fs::remove_file(af);
                 } else {
-                    // Ya está en .{audio_ext}: sin ffmpeg.
+                    // Already in .{audio_ext}: no ffmpeg needed.
                     rename_if_needed(af, &audio_final)?;
                 }
             }
         }
         (Some(vf), None) => {
-            // Solo video: si el archivo descargado ya está en la extensión
-            // pedida, no hace falta ffmpeg (solo renombrar, o nada si ya tiene
-            // el nombre final). Esto evita el fallo "same as Input" de ffmpeg
-            // cuando la entrada y la salida son el mismo archivo.
-            let (target, codec, label) = if merge {
+            // Video only: if the downloaded file is already in the requested
+            // extension, ffmpeg is not needed (just rename, or nothing if it
+            // already has the final name). This avoids ffmpeg's "same as
+            // Input" failure when input and output are the same file.
+            let (target, codec) = if merge {
                 (
                     dir.join(format!("{safe_name}.{output_format}")),
                     video_codec(&output_format),
-                    format!(".{output_format}"),
                 )
             } else {
                 (
                     dir.join(format!("{safe_name}_video.{video_ext}")),
                     video_codec(&video_ext),
-                    format!(".{video_ext}"),
                 )
             };
             if needs_conversion(vf, &target) {
-                println!("Convirtiendo video a {label}...");
                 emit(
                     app,
                     id,
-                    DownloadStatus::Convirtiendo,
+                    DownloadStatus::Converting,
                     70.0,
                     Some("Convirtiendo…"),
                     None,
@@ -928,7 +921,7 @@ fn run_download_inner(
                     &dir,
                     app,
                     id,
-                    DownloadStatus::Convirtiendo,
+                    DownloadStatus::Converting,
                     (70.0, 99.0),
                     duration,
                     cancel,
@@ -939,26 +932,23 @@ fn run_download_inner(
             }
         }
         (None, Some(af)) => {
-            // Solo audio: igual que el caso de solo video.
-            let (target, codec, label) = if merge {
+            // Audio only: same logic as the video-only case.
+            let (target, codec) = if merge {
                 (
                     dir.join(format!("{safe_name}.{output_format}")),
                     audio_codec(&output_format),
-                    format!(".{output_format}"),
                 )
             } else {
                 (
                     dir.join(format!("{safe_name}_audio.{audio_ext}")),
                     audio_codec(&audio_ext),
-                    format!(".{audio_ext}"),
                 )
             };
             if needs_conversion(af, &target) {
-                println!("Convirtiendo audio a {label}...");
                 emit(
                     app,
                     id,
-                    DownloadStatus::Convirtiendo,
+                    DownloadStatus::Converting,
                     70.0,
                     Some("Convirtiendo…"),
                     None,
@@ -976,7 +966,7 @@ fn run_download_inner(
                     &dir,
                     app,
                     id,
-                    DownloadStatus::Convirtiendo,
+                    DownloadStatus::Converting,
                     (70.0, 99.0),
                     duration,
                     cancel,
@@ -986,13 +976,13 @@ fn run_download_inner(
                 rename_if_needed(af, &target)?;
             }
         }
-        (None, None) => unreachable!("ya validado: al menos un formato"),
+        (None, None) => unreachable!("already validated: at least one format"),
     }
 
     emit(
         app,
         id,
-        DownloadStatus::Completado,
+        DownloadStatus::Completed,
         100.0,
         Some("Completado"),
         None,

@@ -1,23 +1,23 @@
 <script lang="ts">
   interface Props {
-    /** Tipo de visualización de la línea: fotogramas (video) o waveform (audio). */
+    /** Timeline visual type: frames (video) or waveform (audio). */
     mode: "video" | "audio";
-    /** Duración total del medio en segundos. */
+    /** Total media duration in seconds. */
     duration: number;
-    /** Inicio del recorte (segundos), enlazable. */
+    /** Trim start (seconds), bindable. */
     start: number;
-    /** Fin del recorte (segundos), enlazable. */
+    /** Trim end (seconds), bindable. */
     end: number;
-    /** Posición actual del playhead (segundos), enlazable. */
+    /** Current playhead position (seconds), bindable. */
     currentTime: number;
-    /** Fotogramas (data-URLs) para la tira del video. */
+    /** Frames (data-URLs) for the video strip. */
     thumbs?: string[];
-    /** Picos normalizados (0-1) para el waveform del audio. */
+    /** Normalized peaks (0-1) for the audio waveform. */
     waveform?: number[];
     disabled?: boolean;
-    /** Se llama al empezar a arrastrar (asas o playhead) para pausar la reproducción. */
+    /** Called when dragging starts (handles or playhead) to pause playback. */
     onScrubStart?: () => void;
-    /** Se llama al soltar el arrastre. */
+    /** Called when the drag is released. */
     onScrubEnd?: () => void;
   }
 
@@ -37,7 +37,7 @@
   let trackEl: HTMLDivElement | undefined = $state();
   let dragging: "start" | "end" | "playhead" | null = $state(null);
 
-  // Separación mínima entre las asas: 0.25s o el 2% de la duración (lo menor).
+  // Minimum gap between the handles: 0.25s or 2% of the duration (whichever is smaller).
   const MIN_GAP = $derived(Math.max(0.1, Math.min(0.25, duration * 0.02)));
 
   function pct(t: number) {
@@ -62,7 +62,7 @@
     const rect = trackEl.getBoundingClientRect();
     const startPx = rect.left + (pct(start) / 100) * trackEl.clientWidth;
     const endPx = rect.left + (pct(end) / 100) * trackEl.clientWidth;
-    const TOLERANCE = 10; // px alrededor del centro del asa
+    const TOLERANCE = 10; // px around the handle center
 
     if (Math.abs(e.clientX - endPx) <= TOLERANCE) {
       dragging = "end";
@@ -96,12 +96,12 @@
     } else if (dragging === "end") {
       end = Math.max(t, start + MIN_GAP);
     } else if (dragging === "playhead") {
-      // El playhead no sale del rango seleccionado.
+      // The playhead never leaves the selected range.
       currentTime = Math.min(end, Math.max(start, t));
     }
   }
 
-  // Accesibilidad: las asas también se pueden mover con las flechas.
+  // Accessibility: the handles can also be moved with the arrow keys.
   function nudge(which: "start" | "end", e: KeyboardEvent) {
     if (disabled) return;
     const step = Math.max(0.1, duration * 0.005);
@@ -155,18 +155,18 @@
       <div class="track-plain" aria-hidden="true"></div>
     {/if}
 
-    <!-- Zonas descartadas del recorte -->
+    <!-- Discarded zones of the trim -->
     <div class="dim dim--left" style={`width: ${pct(start)}%`} aria-hidden="true"></div>
     <div class="dim dim--right" style={`width: ${100 - pct(end)}%`} aria-hidden="true"></div>
 
-    <!-- Zona seleccionada -->
+    <!-- Selected zone -->
     <div
       class="selection"
       style={`left: ${pct(start)}%; right: ${100 - pct(end)}%`}
       aria-hidden="true"
     ></div>
 
-    <!-- Asa de inicio -->
+    <!-- Start handle -->
     <div
       class="handle handle--start"
       style={`left: ${pct(start)}%`}
@@ -180,7 +180,7 @@
       onkeydown={(e) => nudge("start", e)}
     ></div>
 
-    <!-- Asa de fin -->
+    <!-- End handle -->
     <div
       class="handle handle--end"
       style={`left: ${pct(end)}%`}
@@ -229,7 +229,7 @@
     opacity: 0.55;
   }
 
-  /* Tira de fotogramas (video) */
+  /* Frame strip (video) */
   .thumbs {
     position: absolute;
     inset: 0;
@@ -261,7 +261,7 @@
     opacity: 0.55;
   }
 
-  /* Fondo neutro cuando no hay fotogramas ni waveform */
+  /* Neutral background when there are no frames or waveform */
   .track-plain {
     position: absolute;
     inset: 0;
@@ -272,7 +272,7 @@
     );
   }
 
-  /* Partes descartadas del recorte */
+  /* Discarded parts of the trim */
   .dim {
     position: absolute;
     top: 0;
@@ -289,7 +289,7 @@
     right: 0;
   }
 
-  /* Zona seleccionada */
+  /* Selected zone */
   .selection {
     position: absolute;
     top: 0;
@@ -300,7 +300,7 @@
     pointer-events: none;
   }
 
-  /* Asas */
+  /* Handles */
   .handle {
     position: absolute;
     top: 0;

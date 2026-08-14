@@ -1,18 +1,18 @@
 <script lang="ts">
   interface Props {
-    /** Muestra u oculta el overlay. */
+    /** Shows or hides the overlay. */
     open: boolean;
-    /** Etiqueta accesible del overlay. */
+    /** Accessible label of the overlay. */
     ariaLabel?: string;
   }
 
   let { open = false, ariaLabel = "Procesando solicitud" }: Props = $props();
 
-  // Misma geometría que ProgressRing (viewBox 120)
+  // Same geometry as ProgressRing (viewBox 120)
   const R = 52;
   const CIRC = 2 * Math.PI * R;
-  const ARC = CIRC * 0.28; // arco del círculo incompleto (~28%)
-  // id único para el gradiente, para no colisionar si hay varios overlays
+  const ARC = CIRC * 0.28; // arc of the incomplete circle (~28%)
+  // unique id for the gradient, to avoid collisions with multiple overlays
   const gradId = `spin-grad-${crypto.randomUUID()}`;
 </script>
 
@@ -42,8 +42,8 @@
 {/if}
 
 <style>
-  /* El backdrop (fondo translúcido que tapa lo de abajo) usa el `.overlay` global
-     de app.css: rgba oscuro + blur + fade-in + z-index 100. */
+  /* The backdrop (translucent background covering what's below) uses the global
+     `.overlay` from app.css: dark rgba + blur + fade-in + z-index 100. */
 
   .spinner-card {
     display: flex;

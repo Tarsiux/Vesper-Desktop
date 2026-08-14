@@ -2,9 +2,9 @@
   import { fly } from "svelte/transition";
 
   interface Props {
-    /** Mensaje de error a mostrar. Vacío = oculto. */
+    /** Error message to show. Empty = hidden. */
     message?: string;
-    /** Se llama cuando el usuario cierra el aviso (o expira el tiempo). */
+    /** Called when the user dismisses the toast (or the timeout expires). */
     onDismiss?: () => void;
   }
 
@@ -14,8 +14,8 @@
   let hideTimer: ReturnType<typeof setTimeout> | undefined;
   let clearTimer: ReturnType<typeof setTimeout> | undefined;
 
-  // Cada vez que llega un mensaje nuevo, se muestra el aviso y se programa el
-  // cierre automático; si el mensaje se vacía desde fuera, se oculta.
+  // Every time a new message arrives, show the toast and schedule the auto
+  // close; if the message is cleared from outside, hide it.
   $effect(() => {
     if (message) {
       visible = true;
@@ -34,7 +34,7 @@
   function dismiss() {
     visible = false;
     clearTimeout(hideTimer);
-    // Espera a que termine la transición de salida antes de vaciar el mensaje.
+    // Waits for the exit transition to finish before clearing the message.
     clearTimer = setTimeout(() => onDismiss?.(), 220);
   }
 </script>

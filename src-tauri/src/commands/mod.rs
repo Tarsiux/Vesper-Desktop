@@ -6,12 +6,12 @@ pub fn register() -> Box<tauri::ipc::InvokeHandler<tauri::Wry>> {
     Box::new(tauri::generate_handler![
         folder::select_folder,
         download::show_options_video,
-        download::descargar,
-        download::cancelar_descarga,
-        download::actualizar_ytdlp,
+        download::download,
+        download::cancel_download,
+        download::update_ytdlp,
         editor::select_media_file,
-        editor::generar_thumbnails,
-        editor::recortar_media,
-        editor::cancelar_recorte,
+        editor::generate_thumbnails,
+        editor::trim_media,
+        editor::cancel_trim,
     ])
 }

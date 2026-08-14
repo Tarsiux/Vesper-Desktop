@@ -9,21 +9,21 @@ use tauri::Emitter;
 use super::download::{binary_path, hidden_cmd, kill_tree, video_codec};
 use crate::structs::{EditProgress, EditStatus};
 
-/// Nombre del evento emitido al frontend con el progreso del recorte.
+/// Name of the event emitted to the frontend with the trim progress.
 const EVENT: &str = "editor://progress";
 
-/// Contador para que los ids de recorte sean únicos.
+/// Counter so trim ids stay unique.
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// Identifica un recorte activo para poder cancelarlo: un flag de cancelación
-/// y el pid del proceso ffmpeg que se está ejecutando ahora mismo.
+/// Identifies an active trim so it can be cancelled: a cancellation flag and
+/// the pid of the currently running ffmpeg process.
 #[derive(Clone)]
 struct CancelHandle {
     flag: Arc<AtomicBool>,
     pid: Arc<Mutex<Option<u32>>>,
 }
 
-/// Recortes en curso, por id.
+/// Active trims, keyed by id.
 static ACTIVE: OnceLock<Mutex<HashMap<String, CancelHandle>>> = OnceLock::new();
 
 fn active() -> &'static Mutex<HashMap<String, CancelHandle>> {
@@ -58,10 +58,10 @@ fn emit(
     );
 }
 
-/// Abre el diálogo nativo para elegir un archivo de video o audio según el modo.
+/// Opens the native dialog to pick a video or audio file depending on the mode.
 #[tauri::command]
-pub fn select_media_file(tipo: String) -> Result<Option<String>, String> {
-    let (title, filters): (&str, Vec<(&str, Vec<&str>)>) = match tipo.as_str() {
+pub fn select_media_file(kind: String) -> Result<Option<String>, String> {
+    let (title, filters): (&str, Vec<(&str, Vec<&str>)>) = match kind.as_str() {
         "audio" => (
             "Seleccionar audio",
             vec![("Audio", vec!["mp3", "m4a", "wav", "flac", "ogg"])],
@@ -82,12 +82,12 @@ pub fn select_media_file(tipo: String) -> Result<Option<String>, String> {
         .map(|p| p.display().to_string().replace('\\', "/")))
 }
 
-/// Extrae `count` fotogramas repartidos por la duración con ffmpeg y los
-/// devuelve como data-URLs JPEG para la tira de la línea de tiempo del video.
-/// Un spawn de ffmpeg por fotograma, salida por stdout (pipe) para no ensuciar
-/// el disco; si un fotograma falla (p. ej. archivo con DRM) se salta.
+/// Extracts `count` frames spread across the duration with ffmpeg and returns
+/// them as JPEG data-URLs for the video timeline strip. One ffmpeg spawn per
+/// frame, output to stdout (pipe) so nothing touches the disk; if a frame
+/// fails (e.g. a DRM-protected file) it is skipped.
 #[tauri::command]
-pub fn generar_thumbnails(
+pub fn generate_thumbnails(
     app: tauri::AppHandle,
     path: String,
     count: u32,
@@ -103,8 +103,8 @@ pub fn generar_thumbnails(
 
     let mut thumbs = Vec::with_capacity(count as usize);
     for i in 0..count {
-        // Timestamp del fotograma i, distribuido por la duración (centro de su
-        // franja para no pillar los bordes).
+        // Timestamp of frame i, spread across the duration (center of its
+        // slice so the edges are not hit).
         let t = if duration > 0.0 {
             (i as f64 + 0.5) * duration / count as f64
         } else {
@@ -137,9 +137,9 @@ pub fn generar_thumbnails(
     Ok(thumbs)
 }
 
-/// Lee la duración del archivo desde la salida de `ffmpeg -i` (línea
-/// `Duration: HH:MM:SS.xx` en stderr). Se usa para mapear el progreso real del
-/// recorte; si no se puede leer, el recorte igualmente funciona.
+/// Reads the file duration from `ffmpeg -i` output (the `Duration: HH:MM:SS.xx`
+/// line in stderr). Used to map the real trim progress; if it cannot be read
+/// the trim still works.
 fn probe_duration(ffmpeg: &std::path::Path, path: &str) -> Option<f64> {
     let output = hidden_cmd(ffmpeg).arg("-i").arg(path).output().ok()?;
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -153,23 +153,23 @@ fn probe_duration(ffmpeg: &std::path::Path, path: &str) -> Option<f64> {
     Some(h * 3600.0 + m * 60.0 + s)
 }
 
-/// Lanza el recorte en un hilo separado y devuelve al instante un `id` que el
-/// frontend usa para seguir el progreso vía eventos `editor://progress`
-/// (mismo patrón que las descargas).
+/// Starts the trim on a separate thread and immediately returns an `id` the
+/// frontend uses to follow progress via `editor://progress` events (same
+/// pattern as downloads).
 ///
-/// - Audio: corte sin pérdida con `-c copy` (instantáneo).
-/// - Video: re-codificado para un corte exacto al fotograma (`-c:v` según el
-///   contenedor, `-c:a copy` para no tocar el audio).
+/// - Audio: lossless cut with `-c copy` (instant).
+/// - Video: re-encoded for a frame-exact cut (`-c:v` depending on the
+///   container, `-c:a copy` to leave the audio untouched).
 ///
-/// El resultado se escribe en un temporal del mismo directorio y luego
-/// sobrescribe el archivo original.
+/// The result is written to a temp file in the same directory and then
+/// overwrites the original file.
 #[tauri::command]
-pub fn recortar_media(
+pub fn trim_media(
     app: tauri::AppHandle,
     path: String,
     start: f64,
     end: f64,
-    es_video: bool,
+    is_video: bool,
 ) -> Result<String, String> {
     let src = PathBuf::from(&path);
     if !src.is_file() {
@@ -189,7 +189,7 @@ pub fn recortar_media(
     active().lock().unwrap().insert(id.clone(), handle.clone());
 
     std::thread::spawn(move || {
-        let result = run_trim(&app, &thread_id, path, start, end, es_video, &handle);
+        let result = run_trim(&app, &thread_id, path, start, end, is_video, &handle);
         active().lock().unwrap().remove(&thread_id);
         if let Err(e) = result {
             emit(&app, &thread_id, EditStatus::Error, 0.0, None, Some(&e));
@@ -206,7 +206,7 @@ fn run_trim(
     path: String,
     start: f64,
     end: f64,
-    es_video: bool,
+    is_video: bool,
     cancel: &CancelHandle,
 ) -> Result<(), String> {
     if cancel.flag.load(Ordering::SeqCst) {
@@ -216,8 +216,8 @@ fn run_trim(
     let ffmpeg = binary_path(app, "ffmpeg")?;
     let src = PathBuf::from(&path);
 
-    // El temporal vive en el mismo directorio (mismo volumen) para que el
-    // renombrado final sobre el original sea inmediato.
+    // The temp file lives in the same directory (same volume) so the final
+    // rename over the original is immediate.
     let ext = src
         .extension()
         .and_then(|e| e.to_str())
@@ -226,10 +226,10 @@ fn run_trim(
     let tmp = src.with_extension(format!("vesper-trim-{id}.{ext}"));
     let len = end - start;
 
-    emit(app, id, EditStatus::Procesando, 0.0, Some("Recortando…"), None);
+    emit(app, id, EditStatus::Processing, 0.0, Some("Recortando…"), None);
 
-    // Estimamos la duración para mapear out_time_us -> % (si falla, el recorte
-    // funciona igualmente y el panel queda en modo "procesando").
+    // Estimate the duration to map out_time_us -> % (if it fails, the trim
+    // still works and the panel just stays in "processing" mode).
     let duration = probe_duration(&ffmpeg, &path);
 
     let mut args: Vec<String> = vec![
@@ -244,7 +244,7 @@ fn run_trim(
         "-t".into(),
         format!("{len:.3}"),
     ];
-    if es_video {
+    if is_video {
         args.extend([
             "-c:v".into(),
             video_codec(&ext).into(),
@@ -265,7 +265,7 @@ fn run_trim(
 
     *cancel.pid.lock().unwrap() = Some(child.id());
 
-    // Si la cancelación llegó justo durante el spawn, la matamos aquí mismo.
+    // If the cancellation arrived right during spawn, kill it here.
     if cancel.flag.load(Ordering::SeqCst) {
         kill_tree(child.id());
         let _ = child.wait();
@@ -274,8 +274,8 @@ fn run_trim(
         return Err("Recorte cancelado".into());
     }
 
-    // stderr (errores) se lee en un hilo aparte para no bloquear, igual que en
-    // las descargas: si no se drena, el buffer se llena y ffmpeg se cuelga.
+    // stderr (errors) is drained on a separate thread so nothing blocks, same
+    // as downloads: if it is not drained the buffer fills up and ffmpeg hangs.
     let stderr = child.stderr.take().expect("stderr piped");
     let err_handle = std::thread::spawn(move || {
         let mut buf = String::new();
@@ -288,7 +288,7 @@ fn run_trim(
         buf
     });
 
-    // stdout (`-progress pipe:1`) se lee aquí, en vivo.
+    // stdout (`-progress pipe:1`) is read here, live.
     let stdout = child.stdout.take().expect("stdout piped");
     let mut out_time_us: f64 = 0.0;
     for line in BufReader::new(stdout).lines() {
@@ -306,7 +306,7 @@ fn run_trim(
             emit(
                 app,
                 id,
-                EditStatus::Procesando,
+                EditStatus::Processing,
                 frac * 100.0,
                 Some("Recortando…"),
                 None,
@@ -337,19 +337,18 @@ fn run_trim(
         return Err("ffmpeg no generó el archivo recortado".into());
     }
 
-    // Sobrescribe el archivo original con el recorte.
+    // Overwrites the original file with the trim result.
     let _ = std::fs::remove_file(&src);
     std::fs::rename(&tmp, &src)
         .map_err(|e| format!("No se pudo sobrescribir el archivo original: {e}"))?;
 
-    emit(app, id, EditStatus::Completado, 100.0, Some("Completado"), None);
+    emit(app, id, EditStatus::Completed, 100.0, Some("Completado"), None);
     Ok(())
 }
 
-/// Cancela un recorte en curso: mata ffmpeg y el hilo se encarga de borrar el
-/// temporal.
+/// Cancels an active trim: kills ffmpeg and the thread deletes the temp file.
 #[tauri::command]
-pub fn cancelar_recorte(id: String) {
+pub fn cancel_trim(id: String) {
     if let Some(handle) = active().lock().unwrap().remove(&id) {
         handle.flag.store(true, Ordering::SeqCst);
         if let Some(pid) = handle.pid.lock().unwrap().take() {

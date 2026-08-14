@@ -3,37 +3,37 @@
   import type { DownloadStatus } from "$lib/types";
 
   interface Props {
-    /** Nombre del archivo que se está descargando. */
+    /** Name of the file being downloaded. */
     fileName: string;
-    /** Progreso global, de 0 a 100. */
+    /** Overall progress, from 0 to 100. */
     progress: number;
-    /** Fase actual de la descarga. */
+    /** Current phase of the download. */
     status: DownloadStatus;
-    /** Mensaje de fase en vivo (p. ej. "Descargando video…"). */
+    /** Live phase message (e.g. "Descargando video…"). */
     message?: string | null;
-    /** Texto de error, si lo hay. */
+    /** Error text, if any. */
     error?: string | null;
-    /** Acción al pulsar el botón de quitar. */
-    onQuitar?: () => void;
+    /** Action triggered when the remove button is pressed. */
+    onRemove?: () => void;
   }
 
-  let { fileName, progress, status, message, error, onQuitar }: Props = $props();
+  let { fileName, progress, status, message, error, onRemove }: Props = $props();
 
   const isActive = $derived(
-    status === "descargando" || status === "convirtiendo" || status === "uniendo"
+    status === "downloading" || status === "converting" || status === "merging"
   );
-  const isDone = $derived(status === "completado");
+  const isDone = $derived(status === "completed");
   const isFailed = $derived(status === "error");
 
   const statusLabel = $derived.by(() => {
     switch (status) {
-      case "descargando":
+      case "downloading":
         return message ?? "Descargando…";
-      case "convirtiendo":
+      case "converting":
         return message ?? "Convirtiendo…";
-      case "uniendo":
+      case "merging":
         return message ?? "Uniendo…";
-      case "completado":
+      case "completed":
         return "Completado";
       case "error":
         return "Error";
@@ -72,11 +72,11 @@
     {/if}
   </div>
 
-  {#if onQuitar}
+  {#if onRemove}
     <button
-      class="quitar"
+      class="remove"
       type="button"
-      onclick={onQuitar}
+      onclick={onRemove}
       aria-label="Quitar de la cola"
     >
       &times;
@@ -150,7 +150,7 @@
     line-height: 1;
   }
 
-  .quitar {
+  .remove {
     position: absolute;
     top: var(--space-2);
     right: var(--space-2);
@@ -171,7 +171,7 @@
       color var(--ease);
   }
 
-  .quitar:hover {
+  .remove:hover {
     background: var(--hover-fill);
     color: var(--on-surface);
   }
