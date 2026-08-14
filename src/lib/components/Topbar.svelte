@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { page } from "$app/state";
 </script>
 
 <nav class="topbar" aria-label="Navegación principal">
@@ -7,8 +8,22 @@
     <span class="brand-name">Vesper</span>
   </div>
   <ol class="topbar-nav">
-    <li><a class="nav-link is-active" href="/home">Descargar</a></li>
-    <li><button class="nav-link" type="button" disabled>Editar</button></li>
+    <li>
+      <a
+        class="nav-link"
+        class:is-active={page.url.pathname === "/" || page.url.pathname === "/home"}
+        href="/home"
+        >Descargar</a
+      >
+    </li>
+    <li>
+      <a
+        class="nav-link"
+        class:is-active={page.url.pathname.startsWith("/editor")}
+        href="/editor"
+        >Editar</a
+      >
+    </li>
   </ol>
 </nav>
 
@@ -59,8 +74,7 @@
     gap: var(--space-1);
   }
 
-  .topbar-nav a,
-  .topbar-nav button {
+  .topbar-nav a {
     display: inline-block;
     padding: 8px 14px;
     border: none;
@@ -78,15 +92,9 @@
       color var(--ease);
   }
 
-  .topbar-nav a:hover,
-  .topbar-nav button:hover:not(:disabled) {
+  .topbar-nav a:hover {
     background: var(--hover-fill);
     color: var(--on-surface);
-  }
-
-  .topbar-nav button:disabled {
-    opacity: 0.45;
-    cursor: not-allowed;
   }
 
   .topbar-nav a.is-active {
