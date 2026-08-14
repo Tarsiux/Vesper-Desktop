@@ -39,6 +39,25 @@ pub struct Format {
     pub downloader_options: Option<serde_json::Value>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DownloadStatus {
+    Descargando,
+    Convirtiendo,
+    Uniendo,
+    Completado,
+    Error,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DownloadProgress {
+    pub id: String,
+    pub status: DownloadStatus,
+    pub progress: f64,
+    pub message: Option<String>,
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct VideoInfo {
     pub id: String,
