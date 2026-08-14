@@ -6,7 +6,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use tauri::{Emitter, Manager};
 
-use crate::structs::{DownloadProgress, DownloadStatus, VideoInfo};
+use crate::structs::{DownloadProgress, DownloadStatus, UpdateProgress, VideoInfo};
+
+// Permite lanzar procesos sin ventana de consola en Windows (CREATE_NO_WINDOW).
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 
 /// Nombre del evento emitido al frontend con el progreso en vivo.
 const EVENT: &str = "download://progress";
@@ -29,17 +33,30 @@ fn active() -> &'static Mutex<HashMap<String, CancelHandle>> {
     ACTIVE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Mata el proceso y todo su árbol de hijos (yt-dlp puede lanzar ffmpeg interno).
-fn kill_tree(pid: u32) {
+/// Crea un `Command` que no abre ventana de consola al lanzar procesos de
+/// consola (yt-dlp/ffmpeg/taskkill) desde la app gráfica. En release la app es
+/// GUI (sin consola) y Windows, sin este flag, crea una ventana de cmd nueva
+/// para cada proceso hijo; `CREATE_NO_WINDOW` (0x08000000) la suprime.
+pub(crate) fn hidden_cmd(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    let mut cmd = Command::new(program);
     #[cfg(windows)]
     {
-        let _ = Command::new("taskkill")
+        cmd.creation_flags(0x0800_0000);
+    }
+    cmd
+}
+
+/// Mata el proceso y todo su árbol de hijos (yt-dlp puede lanzar ffmpeg interno).
+pub(crate) fn kill_tree(pid: u32) {
+    #[cfg(windows)]
+    {
+        let _ = hidden_cmd("taskkill")
             .args(["/PID", &pid.to_string(), "/T", "/F"])
             .output();
     }
     #[cfg(not(windows))]
     {
-        let _ = Command::new("kill")
+        let _ = hidden_cmd("kill")
             .arg("-9")
             .arg(pid.to_string())
             .output();
@@ -95,7 +112,7 @@ fn run_ytdlp(
         return Err("Descarga cancelada".into());
     }
 
-    let mut child = Command::new(cmd)
+    let mut child = hidden_cmd(cmd)
         .current_dir(cwd)
         .args(args)
         .stdout(Stdio::piped())
@@ -179,7 +196,7 @@ fn run_ffmpeg(
     ];
     full_args.extend_from_slice(args);
 
-    let mut child = Command::new(cmd)
+    let mut child = hidden_cmd(cmd)
         .current_dir(cwd)
         .args(&full_args)
         .stdout(Stdio::piped())
@@ -359,7 +376,7 @@ fn sanitize_windows_filename(name: &str) -> String {
     }
 }
 
-fn video_codec(ext: &str) -> &'static str {
+pub(crate) fn video_codec(ext: &str) -> &'static str {
     match ext {
         "webm" => "libvpx-vp9",
         "avi" => "mpeg4",
@@ -367,7 +384,7 @@ fn video_codec(ext: &str) -> &'static str {
     }
 }
 
-fn audio_codec(ext: &str) -> &'static str {
+pub(crate) fn audio_codec(ext: &str) -> &'static str {
     match ext {
         "mp3" => "libmp3lame",
         "webm" | "opus" => "libopus",
@@ -376,7 +393,7 @@ fn audio_codec(ext: &str) -> &'static str {
     }
 }
 
-fn binary_path(app: &tauri::AppHandle, name: &str) -> Result<PathBuf, String> {
+pub(crate) fn binary_path(app: &tauri::AppHandle, name: &str) -> Result<PathBuf, String> {
     let file_name = format!("{name}.exe");
 
     if tauri::is_dev() {
@@ -393,7 +410,7 @@ fn binary_path(app: &tauri::AppHandle, name: &str) -> Result<PathBuf, String> {
 pub fn show_options_video(app: tauri::AppHandle, url: String) -> Result<VideoInfo, String> {
     let yt_dlp = binary_path(&app, "yt-dlp")?;
 
-    let output = Command::new(yt_dlp)
+    let output = hidden_cmd(yt_dlp)
         .arg("-J")
         .arg("--no-playlist")
         .arg(&url)
@@ -511,6 +528,86 @@ pub fn cancelar_descarga(id: String) {
             kill_tree(pid);
         }
     }
+}
+
+/// Nombre del evento emitido al frontend con el progreso de la actualización.
+const UPDATE_EVENT: &str = "update://progress";
+
+fn emit_update(app: &tauri::AppHandle, progress: f64, message: Option<&str>, error: Option<&str>) {
+    let _ = app.emit(
+        UPDATE_EVENT,
+        UpdateProgress {
+            progress,
+            message: message.map(|s| s.to_string()),
+            error: error.map(|s| s.to_string()),
+        },
+    );
+}
+
+/// Actualiza yt-dlp en su propia ruta ejecutando `yt-dlp -U`.
+///
+/// La app corre como administrador (manifest `requireAdministrator` en
+/// build.rs), así que el binario empaquetado en la ruta de instalación se puede
+/// sobrescribir sin elevación adicional. El comando bloquea hasta que termina
+/// (corre en el hilo de comandos de Tauri, no en la UI) y va emitiendo el
+/// progreso real vía `update://progress`: el propio actualizador de yt-dlp
+/// reutiliza el descargador y pinta líneas `[download] xx.x%` en stdout.
+#[tauri::command]
+pub fn actualizar_ytdlp(app: tauri::AppHandle) -> Result<(), String> {
+    let yt_dlp = binary_path(&app, "yt-dlp")?;
+
+    emit_update(&app, 0.0, Some("Comprobando actualización…"), None);
+
+    let mut child = hidden_cmd(yt_dlp)
+        .arg("-U")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("No se pudo lanzar yt-dlp -U: {e}"))?;
+
+    // stderr (errores) se lee en un hilo aparte para no bloquear, igual que en
+    // las descargas: si no se drena, el buffer se llena y yt-dlp se cuelga.
+    let stderr = child.stderr.take().expect("stderr piped");
+    let err_handle = std::thread::spawn(move || {
+        let mut buf = String::new();
+        for line in BufReader::new(stderr).lines() {
+            if let Ok(l) = line {
+                buf.push_str(&l);
+                buf.push('\n');
+            }
+        }
+        buf
+    });
+
+    // stdout (progreso del descargador del actualizador) se lee en vivo.
+    let stdout = child.stdout.take().expect("stdout piped");
+    for line in BufReader::new(stdout).lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => break,
+        };
+        if let Some(pct) = parse_percent(&line) {
+            emit_update(&app, pct, Some("Descargando actualización…"), None);
+        }
+    }
+
+    let status = child.wait().map_err(|e| e.to_string())?;
+    let err_buf = err_handle.join().unwrap_or_default();
+
+    if !status.success() {
+        let msg = if err_buf.trim().is_empty() {
+            "yt-dlp -U falló".to_string()
+        } else {
+            err_buf.trim().to_string()
+        };
+        emit_update(&app, 0.0, None, Some(&msg));
+        return Err(msg);
+    }
+
+    // "ya está actualizado" sale por esta vía sin líneas `[download]`: se
+    // emite el 100% igualmente y el splash navega a /home.
+    emit_update(&app, 100.0, Some("yt-dlp actualizado"), None);
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
